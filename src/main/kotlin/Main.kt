@@ -1,6 +1,9 @@
-import androidx.compose.material.Text
-import androidx.compose.ui.window.singleWindowApplication
+import kotlinx.coroutines.*
+import network.fetchPlayerDataTotals
 
-fun main() = singleWindowApplication {
-    Text("Hello, NBA World!")
+fun main() = runBlocking {
+    val stats = fetchPlayerDataTotals(2025, "BOS")
+    stats.forEach {
+        println("${it.playerName} (${it.team}) — ${it.points} очков за сезон")
+    }
 }

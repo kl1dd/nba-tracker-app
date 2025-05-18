@@ -18,7 +18,7 @@ suspend fun fetchPlayerDataTotals(
             json(Json { ignoreUnknownKeys = true })
         }
     }
-    val url = "http://rest.nbaapi.com/api/PlayerDataTotals/query?season=$season&team=$team&sortBy=PlayerName&ascending=true&pageNumber=1&pageSize=10"
+    val url = "http://rest.nbaapi.com/api/PlayerDataTotals/query?season=$season&team=$team&sortBy=PlayerName&ascending=true&pageNumber=1&pageSize=35"
     val response: List<PlayerDataTotals> = client.get(url).body()
     client.close()
     return response

@@ -1,5 +1,7 @@
 import kotlinx.coroutines.*
 import network.fetchPlayerDataTotals
+import network.fetchPlayerDataByNamePaged
+import network.fetchPlayerDataByNameAndSeason
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -9,16 +11,20 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.foundation.layout.*
 import model.PlayerDataTotals
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 
 enum class Screen {
-    MAIN_MENU, PLAYER_STATS, PLAYER_COMPARE
+    MAIN_MENU,
+    PLAYER_STATS,      // По сезонам/командам
+    PLAYER_SEARCH,     // Поиск по имени
+    PLAYER_COMPARE
 }
 
 @Composable
 fun MainMenu(onNavigate: (Screen) -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize()
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 40.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -37,7 +43,14 @@ fun MainMenu(onNavigate: (Screen) -> Unit) {
                 modifier = Modifier.width(220.dp),
                 onClick = { onNavigate(Screen.PLAYER_STATS) }
             ) {
-                Text("Статистика игроков")
+                Text("Статистика по сезонам")
+            }
+            Spacer(Modifier.height(16.dp))
+            Button(
+                modifier = Modifier.width(220.dp),
+                onClick = { onNavigate(Screen.PLAYER_SEARCH) }
+            ) {
+                Text("Статистика по имени")
             }
             Spacer(Modifier.height(16.dp))
             Button(
@@ -49,7 +62,6 @@ fun MainMenu(onNavigate: (Screen) -> Unit) {
         }
     }
 }
-
 
 @Composable
 fun PlayerStatsScreen(onBack: () -> Unit) {
@@ -106,9 +118,7 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(16.dp))
 
-        // Сезон + команда + Загрузить
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Dropdown для сезона
             Box {
                 Button(onClick = { seasonExpanded = true }) {
                     Text("Сезон: $season")
@@ -129,7 +139,6 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.width(8.dp))
 
-            // Dropdown для команды (с кратким и полным названием)
             Box {
                 Button(onClick = { teamExpanded = true }) {
                     val selected = teams.find { it.first == team }
@@ -173,7 +182,6 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(16.dp))
 
-        // Dropdown для выбора игрока (после загрузки)
         if (players.isNotEmpty()) {
             Box {
                 Button(onClick = { playerExpanded = true }) {
@@ -210,7 +218,6 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
             Text("Ошибка: $it", color = MaterialTheme.colors.error)
         }
 
-        // Показываем либо выбранного игрока (подробно), либо всех игроков команды/сезона (списком)
         val shownPlayers = if (selectedPlayer != null) {
             players.filter { it.playerName == selectedPlayer }
         } else {
@@ -254,6 +261,285 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
     }
 }
 
+@Composable
+fun PlayerSearchScreen(onBack: () -> Unit) {
+    var searchQuery by remember { mutableStateOf("") }
+    var players by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var selectedPlayer by remember { mutableStateOf<PlayerDataTotals?>(null) }
+
+    var currentPage by remember { mutableStateOf(1) }
+    val pageSize = 6
+
+    // Для диапазона сезонов
+    val seasons = (2024 downTo 1990).toList()
+    var fromSeason by remember { mutableStateOf(seasons.last()) }
+    var toSeason by remember { mutableStateOf(seasons.first()) }
+    var isRangeLoading by remember { mutableStateOf(false) }
+    var wasShowClicked by remember { mutableStateOf(false) }
+
+    // Для таблицы: хранит полный map "год -> данные", чтобы не терять даже пустые года
+    var seasonDataByYearGlobal by remember { mutableStateOf<Map<Int, PlayerDataTotals?>>(emptyMap()) }
+
+    fun loadPlayers() {
+        isLoading = true
+        error = null
+        players = emptyList()
+        selectedPlayer = null
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                players = network.fetchPlayerDataByNamePaged(searchQuery, currentPage, pageSize)
+                isLoading = false
+            } catch (e: Exception) {
+                error = e.message
+                isLoading = false
+            }
+        }
+    }
+
+    // ===== ТАБЛИЦА ПОЛНОЙ СТАТИСТИКИ =====
+    val headers = listOf(
+        "Сезон", "Команда", "Поз", "Возраст", "Матчи", "Старт", "Мин", "Очки",
+        "ФГ", "ФГА", "% ФГ", "3П", "3ПА", "% 3П", "2П", "2ПА", "% 2П", "ЭФФ %",
+        "Штр", "ШтрА", "% Штр", "ОРБ", "ДРБ", "Подб", "Асс", "ПХВ", "Блок", "Пот", "Фолы"
+    )
+
+    fun PlayerDataTotals.toTableRow(): List<String> = listOf(
+        season?.toString() ?: "–",
+        team ?: "–",
+        position ?: "–",
+        age?.toString() ?: "–",
+        games?.toString() ?: "–",
+        gamesStarted?.toString() ?: "–",
+        minutesPg?.let { String.format("%.1f", it) } ?: "–",
+        points?.toString() ?: "–",
+        fieldGoals?.toString() ?: "–",
+        fieldAttempts?.toString() ?: "–",
+        fieldPercent?.let { String.format("%.1f", it * 100) } ?: "–",
+        threeFg?.toString() ?: "–",
+        threeAttempts?.toString() ?: "–",
+        threePercent?.let { String.format("%.1f", it * 100) } ?: "–",
+        twoFg?.toString() ?: "–",
+        twoAttempts?.toString() ?: "–",
+        twoPercent?.let { String.format("%.1f", it * 100) } ?: "–",
+        effectFgPercent?.let { String.format("%.1f", it * 100) } ?: "–",
+        ft?.toString() ?: "–",
+        ftAttempts?.toString() ?: "–",
+        ftPercent?.let { String.format("%.1f", it * 100) } ?: "–",
+        offensiveRb?.toString() ?: "–",
+        defensiveRb?.toString() ?: "–",
+        totalRb?.toString() ?: "–",
+        assists?.toString() ?: "–",
+        steals?.toString() ?: "–",
+        blocks?.toString() ?: "–",
+        turnovers?.toString() ?: "–",
+        personalFouls?.toString() ?: "–"
+    )
+
+    Column(modifier = Modifier.padding(32.dp)) {
+        Button(onClick = onBack) { Text("← В главное меню") }
+        Spacer(Modifier.height(16.dp))
+
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            label = { Text("Имя игрока (например, James)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+
+        Button(
+            onClick = {
+                currentPage = 1
+                loadPlayers()
+            }
+        ) { Text("Найти") }
+
+        Spacer(Modifier.height(8.dp))
+        if (isLoading) Text("Загрузка...")
+        error?.let { Text("Ошибка: $it", color = MaterialTheme.colors.error) }
+
+        // Пагинация + выбор игрока
+        if (players.isNotEmpty() && selectedPlayer == null) {
+            Text("Показано: ${players.size} игроков, страница $currentPage")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Button(
+                    enabled = currentPage > 1,
+                    onClick = {
+                        currentPage--
+                        loadPlayers()
+                    }) {
+                    Text("Назад")
+                }
+                Spacer(Modifier.width(16.dp))
+                Text("Страница $currentPage")
+                Spacer(Modifier.width(16.dp))
+                Button(
+                    enabled = players.size == pageSize,
+                    onClick = {
+                        currentPage++
+                        loadPlayers()
+                    }) {
+                    Text("Вперёд")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Column {
+                players.forEach { player ->
+                    Button(
+                        onClick = {
+                            selectedPlayer = player
+                            wasShowClicked = false
+                            seasonDataByYearGlobal = emptyMap()
+                            fromSeason = seasons.last()
+                            toSeason = seasons.first()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.primary)
+                    ) {
+                        Text("${player.playerName} (${player.team}, ${player.season})", color = MaterialTheme.colors.onPrimary)
+                    }
+                }
+            }
+        }
+
+        // --- После выбора игрока ---
+        selectedPlayer?.let { player ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                elevation = 6.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("${player.playerName}", style = MaterialTheme.typography.h6)
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Сезон с:")
+                        Spacer(Modifier.width(4.dp))
+                        DropdownMenuBox(
+                            options = seasons,
+                            selected = fromSeason,
+                            onSelect = { fromSeason = it }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("по")
+                        Spacer(Modifier.width(4.dp))
+                        DropdownMenuBox(
+                            options = seasons.filter { it >= fromSeason },
+                            selected = toSeason,
+                            onSelect = { toSeason = it }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                isRangeLoading = true
+                                wasShowClicked = true
+                                seasonDataByYearGlobal = emptyMap()
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    try {
+                                        val years = (fromSeason..toSeason).toList()
+                                        val deferreds = years.map { year ->
+                                            async {
+                                                try {
+                                                    val data = network.fetchPlayerDataByNameAndSeason(player.playerName, year)
+                                                    year to data.firstOrNull()
+                                                } catch (_: Exception) {
+                                                    year to null
+                                                }
+                                            }
+                                        }
+                                        val results = deferreds.awaitAll().toMap()
+                                        seasonDataByYearGlobal = results
+                                        isRangeLoading = false
+                                    } catch (e: Exception) {
+                                        isRangeLoading = false
+                                    }
+                                }
+                            }
+                        ) { Text("Показать") }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    if (isRangeLoading) {
+                        Text("Загрузка статистики по сезонам…")
+                    }
+
+                    if (wasShowClicked) {
+                        val yearRange = (fromSeason..toSeason).toList()
+                        val seasonDataByYear = yearRange.map { year ->
+                            seasonDataByYearGlobal[year]
+                        }
+                        Box(
+                            Modifier
+                                .horizontalScroll(rememberScrollState())
+                                .fillMaxWidth()
+                                .heightIn(min = 200.dp, max = 400.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Column {
+                                // Header row
+                                Row {
+                                    headers.forEach { header ->
+                                        Text(header, Modifier.width(90.dp))
+                                    }
+                                }
+                                Divider()
+                                // Data rows
+                                yearRange.forEachIndexed { idx, year ->
+                                    val s = seasonDataByYear[idx]
+                                    val row = s?.toTableRow() ?: List(headers.size) { "–" }
+                                    Row {
+                                        row.forEach { value ->
+                                            Text(value, Modifier.width(90.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!isRangeLoading && seasonDataByYear.all { it == null }) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("Нет статистики за выбранные годы", color = MaterialTheme.colors.error)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = {
+                selectedPlayer = null
+                seasonDataByYearGlobal = emptyMap()
+                wasShowClicked = false
+            }) { Text("Назад к списку") }
+        }
+    }
+}
+
+@Composable
+fun DropdownMenuBox(options: List<Int>, selected: Int, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Button(onClick = { expanded = true }) {
+            Text(selected.toString())
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { value ->
+                DropdownMenuItem(onClick = {
+                    onSelect(value)
+                    expanded = false
+                }) {
+                    Text(value.toString())
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun PlayerCompareScreen(onBack: () -> Unit) {
@@ -269,10 +555,10 @@ fun PlayerCompareScreen(onBack: () -> Unit) {
 @Composable
 fun AppRoot() {
     var screen by remember { mutableStateOf(Screen.MAIN_MENU) }
-
     when (screen) {
         Screen.MAIN_MENU -> MainMenu { screen = it }
         Screen.PLAYER_STATS -> PlayerStatsScreen(onBack = { screen = Screen.MAIN_MENU })
+        Screen.PLAYER_SEARCH -> PlayerSearchScreen(onBack = { screen = Screen.MAIN_MENU })
         Screen.PLAYER_COMPARE -> PlayerCompareScreen(onBack = { screen = Screen.MAIN_MENU })
     }
 }

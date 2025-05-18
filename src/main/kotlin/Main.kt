@@ -278,8 +278,6 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
     var toSeason by remember { mutableStateOf(seasons.first()) }
     var isRangeLoading by remember { mutableStateOf(false) }
     var wasShowClicked by remember { mutableStateOf(false) }
-
-    // Для таблицы: хранит полный map "год -> данные", чтобы не терять даже пустые года
     var seasonDataByYearGlobal by remember { mutableStateOf<Map<Int, PlayerDataTotals?>>(emptyMap()) }
 
     fun loadPlayers() {
@@ -298,7 +296,6 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
         }
     }
 
-    // ===== ТАБЛИЦА ПОЛНОЙ СТАТИСТИКИ =====
     val headers = listOf(
         "Сезон", "Команда", "Поз", "Возраст", "Матчи", "Старт", "Мин", "Очки",
         "ФГ", "ФГА", "% ФГ", "3П", "3ПА", "% 3П", "2П", "2ПА", "% 2П", "ЭФФ %",
@@ -477,28 +474,43 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
                         val seasonDataByYear = yearRange.map { year ->
                             seasonDataByYearGlobal[year]
                         }
-                        Box(
+
+                        val horizontalState = rememberScrollState()
+                        val verticalState = rememberScrollState()
+
+                        Column(
                             Modifier
-                                .horizontalScroll(rememberScrollState())
                                 .fillMaxWidth()
                                 .heightIn(min = 200.dp, max = 400.dp)
-                                .verticalScroll(rememberScrollState())
                         ) {
-                            Column {
-                                // Header row
-                                Row {
-                                    headers.forEach { header ->
-                                        Text(header, Modifier.width(90.dp))
-                                    }
+                            // Фиксированный заголовок (только по горизонтали)
+                            Row(
+                                Modifier.horizontalScroll(horizontalState)
+                            ) {
+                                headers.forEach { header ->
+                                    Text(
+                                        header,
+                                        Modifier.width(90.dp).padding(vertical = 4.dp),
+                                        style = MaterialTheme.typography.subtitle2
+                                    )
                                 }
-                                Divider()
-                                // Data rows
-                                yearRange.forEachIndexed { idx, year ->
-                                    val s = seasonDataByYear[idx]
-                                    val row = s?.toTableRow() ?: List(headers.size) { "–" }
-                                    Row {
-                                        row.forEach { value ->
-                                            Text(value, Modifier.width(90.dp))
+                            }
+                            Divider()
+                            // Скроллимые строки (по горизонтали и вертикали)
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(horizontalState)
+                                    .verticalScroll(verticalState)
+                            ) {
+                                Column {
+                                    yearRange.forEachIndexed { idx, year ->
+                                        val s = seasonDataByYear[idx]
+                                        val row = s?.toTableRow() ?: List(headers.size) { "–" }
+                                        Row {
+                                            row.forEach { value ->
+                                                Text(value, Modifier.width(90.dp).padding(vertical = 2.dp))
+                                            }
                                         }
                                     }
                                 }

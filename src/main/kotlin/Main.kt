@@ -265,13 +265,14 @@ fun PlayerStatsScreen(onBack: () -> Unit) {
 @Composable
 fun PlayerSearchScreen(onBack: () -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
-    var players by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
+    var playerResults by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var selectedPlayer by remember { mutableStateOf<PlayerDataTotals?>(null) }
-
+    var selectedPlayerName by remember { mutableStateOf<String?>(null) }
+    var seasonsForPlayer by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
+    var selectedSeasonPlayer by remember { mutableStateOf<PlayerDataTotals?>(null) }
     var currentPage by remember { mutableStateOf(1) }
-    val pageSize = 6
+    val pageSize = 20 // побольше, чтобы поиск был удобнее
 
     // Для диапазона сезонов
     val seasons = (2024 downTo 1990).toList()
@@ -284,30 +285,28 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
     fun loadPlayers() {
         isLoading = true
         error = null
-        players = emptyList()
-        selectedPlayer = null
+        playerResults = emptyList()
+        selectedPlayerName = null
+        selectedSeasonPlayer = null
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val fetched = network.fetchPlayerDataByNamePaged(searchQuery, currentPage, pageSize)
                 if (fetched.isEmpty()) {
                     error = "Игрок не найден. Попробуйте другое имя или другую раскладку."
                 } else {
-                    players = fetched
+                    playerResults = fetched
                 }
-                isLoading = false
             } catch (e: Exception) {
-                // Проверяем на 404 или Not Found
                 val message = e.message ?: ""
                 error = if ("404" in message || "Not Found" in message) {
                     "Игрок не найден. Попробуйте другое имя или другую раскладку."
                 } else {
                     "Ошибка при запросе: ${message.lines().firstOrNull() ?: "Неизвестная ошибка"}"
                 }
-                isLoading = false
             }
+            isLoading = false
         }
     }
-
 
     val headers = listOf(
         "Сезон", "Команда", "Поз", "Возраст", "Матчи", "Старт", "Мин", "Очки",
@@ -375,9 +374,11 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
             return@Column
         }
 
-        // Пагинация + выбор игрока
-        if (players.isNotEmpty() && selectedPlayer == null) {
-            Text("Показано: ${players.size} игроков, страница $currentPage")
+        // Пагинация + уникальные имена
+        val uniquePlayers = playerResults.distinctBy { it.playerName }
+
+        if (uniquePlayers.isNotEmpty() && selectedPlayerName == null) {
+            Text("Показано: ${uniquePlayers.size} игроков, страница $currentPage")
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
@@ -395,7 +396,7 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
                 Text("Страница $currentPage")
                 Spacer(Modifier.width(16.dp))
                 Button(
-                    enabled = players.size == pageSize,
+                    enabled = uniquePlayers.size == pageSize,
                     onClick = {
                         currentPage++
                         loadPlayers()
@@ -405,28 +406,38 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Column {
-                players.forEach { player ->
+                uniquePlayers.forEach { player ->
                     Button(
                         onClick = {
-                            selectedPlayer = player
-                            wasShowClicked = false
-                            seasonDataByYearGlobal = emptyMap()
+                            selectedPlayerName = player.playerName
                             fromSeason = seasons.last()
                             toSeason = seasons.first()
+                            wasShowClicked = false
+                            seasonDataByYearGlobal = emptyMap()
+                            // Загрузка всех сезонов игрока
+                            CoroutineScope(Dispatchers.IO).launch {
+                                isRangeLoading = true
+                                try {
+                                    seasonsForPlayer = network.fetchPlayerDataByNamePaged(player.playerName, 1, 1000)
+                                } catch (_: Exception) {
+                                    seasonsForPlayer = emptyList()
+                                }
+                                isRangeLoading = false
+                            }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
                         colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.primary)
                     ) {
-                        Text("${player.playerName} (${player.team}, ${player.season})", color = MaterialTheme.colors.onPrimary)
+                        Text(player.playerName, color = MaterialTheme.colors.onPrimary)
                     }
                 }
             }
         }
 
-        // --- После выбора игрока ---
-        selectedPlayer?.let { player ->
+        // --- После выбора имени игрока ---
+        selectedPlayerName?.let { name ->
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -434,122 +445,128 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
                 elevation = 6.dp
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("${player.playerName}", style = MaterialTheme.typography.h6)
+                    Text("$name", style = MaterialTheme.typography.h6)
                     Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Сезон с:")
-                        Spacer(Modifier.width(4.dp))
-                        DropdownMenuBox(
-                            options = seasons,
-                            selected = fromSeason,
-                            onSelect = { fromSeason = it }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("по")
-                        Spacer(Modifier.width(4.dp))
-                        DropdownMenuBox(
-                            options = seasons.filter { it >= fromSeason },
-                            selected = toSeason,
-                            onSelect = { toSeason = it }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                isRangeLoading = true
-                                wasShowClicked = true
-                                seasonDataByYearGlobal = emptyMap()
-                                CoroutineScope(Dispatchers.IO).launch {
-                                    try {
-                                        val years = (fromSeason..toSeason).toList()
-                                        val deferreds = years.map { year ->
-                                            async {
-                                                try {
-                                                    val data = network.fetchPlayerDataByNameAndSeason(player.playerName, year)
-                                                    year to data.firstOrNull()
-                                                } catch (_: Exception) {
-                                                    year to null
+                    if (isRangeLoading) {
+                        Text("Загрузка сезонов игрока…")
+                    } else if (seasonsForPlayer.isNotEmpty()) {
+                        // Список сезонов и команд
+                        val availableSeasons = seasonsForPlayer.mapNotNull { it.season }.distinct().sortedDescending()
+                        val availableForSeason: (Int) -> List<PlayerDataTotals> = { year ->
+                            seasonsForPlayer.filter { it.season == year }
+                        }
+                        // Интерфейс для выбора диапазона сезонов
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Сезон с:")
+                            Spacer(Modifier.width(4.dp))
+                            DropdownMenuBox(
+                                options = availableSeasons.sorted(),
+                                selected = fromSeason,
+                                onSelect = { fromSeason = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("по")
+                            Spacer(Modifier.width(4.dp))
+                            DropdownMenuBox(
+                                options = availableSeasons.filter { it >= fromSeason }.sortedDescending(),
+                                selected = toSeason,
+                                onSelect = { toSeason = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    isRangeLoading = true
+                                    wasShowClicked = true
+                                    seasonDataByYearGlobal = emptyMap()
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        try {
+                                            val years = (fromSeason..toSeason).toList()
+                                            val deferreds = years.map { year ->
+                                                async {
+                                                    val data = availableForSeason(year).firstOrNull()
+                                                    year to data
+                                                }
+                                            }
+                                            val results = deferreds.awaitAll().toMap()
+                                            seasonDataByYearGlobal = results
+                                            isRangeLoading = false
+                                        } catch (e: Exception) {
+                                            isRangeLoading = false
+                                        }
+                                    }
+                                }
+                            ) { Text("Показать") }
+                        }
+                        Spacer(Modifier.height(12.dp))
+
+                        if (isRangeLoading) {
+                            Text("Загрузка статистики по сезонам…")
+                        }
+
+                        if (wasShowClicked) {
+                            val yearRange = (fromSeason..toSeason).toList()
+                            val seasonDataByYear = yearRange.map { year -> seasonDataByYearGlobal[year] }
+
+                            val horizontalState = rememberScrollState()
+                            val verticalState = rememberScrollState()
+
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 200.dp, max = 400.dp)
+                            ) {
+                                Row(
+                                    Modifier.horizontalScroll(horizontalState)
+                                ) {
+                                    headers.forEach { header ->
+                                        Text(
+                                            header,
+                                            Modifier.width(90.dp).padding(vertical = 4.dp),
+                                            style = MaterialTheme.typography.subtitle2
+                                        )
+                                    }
+                                }
+                                Divider()
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .horizontalScroll(horizontalState)
+                                        .verticalScroll(verticalState)
+                                ) {
+                                    Column {
+                                        yearRange.forEachIndexed { idx, year ->
+                                            val s = seasonDataByYear[idx]
+                                            val row = s?.toTableRow() ?: List(headers.size) { "–" }
+                                            Row {
+                                                row.forEach { value ->
+                                                    Text(value, Modifier.width(90.dp).padding(vertical = 2.dp))
                                                 }
                                             }
                                         }
-                                        val results = deferreds.awaitAll().toMap()
-                                        seasonDataByYearGlobal = results
-                                        isRangeLoading = false
-                                    } catch (e: Exception) {
-                                        isRangeLoading = false
                                     }
                                 }
                             }
-                        ) { Text("Показать") }
-                    }
-                    Spacer(Modifier.height(12.dp))
-
-                    if (isRangeLoading) {
-                        Text("Загрузка статистики по сезонам…")
-                    }
-
-                    if (wasShowClicked) {
-                        val yearRange = (fromSeason..toSeason).toList()
-                        val seasonDataByYear = yearRange.map { year ->
-                            seasonDataByYearGlobal[year]
-                        }
-
-                        val horizontalState = rememberScrollState()
-                        val verticalState = rememberScrollState()
-
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 200.dp, max = 400.dp)
-                        ) {
-                            // Фиксированный заголовок (только по горизонтали)
-                            Row(
-                                Modifier.horizontalScroll(horizontalState)
-                            ) {
-                                headers.forEach { header ->
-                                    Text(
-                                        header,
-                                        Modifier.width(90.dp).padding(vertical = 4.dp),
-                                        style = MaterialTheme.typography.subtitle2
-                                    )
-                                }
-                            }
-                            Divider()
-                            // Скроллимые строки (по горизонтали и вертикали)
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .horizontalScroll(horizontalState)
-                                    .verticalScroll(verticalState)
-                            ) {
-                                Column {
-                                    yearRange.forEachIndexed { idx, year ->
-                                        val s = seasonDataByYear[idx]
-                                        val row = s?.toTableRow() ?: List(headers.size) { "–" }
-                                        Row {
-                                            row.forEach { value ->
-                                                Text(value, Modifier.width(90.dp).padding(vertical = 2.dp))
-                                            }
-                                        }
-                                    }
-                                }
+                            if (!isRangeLoading && seasonDataByYear.all { it == null }) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Нет статистики за выбранные годы", color = MaterialTheme.colors.error)
                             }
                         }
-                        if (!isRangeLoading && seasonDataByYear.all { it == null }) {
-                            Spacer(Modifier.height(8.dp))
-                            Text("Нет статистики за выбранные годы", color = MaterialTheme.colors.error)
-                        }
+                    } else {
+                        Text("Нет статистики для игрока.", color = MaterialTheme.colors.error)
                     }
                 }
             }
             Spacer(Modifier.height(8.dp))
             Button(onClick = {
-                selectedPlayer = null
+                selectedPlayerName = null
+                seasonsForPlayer = emptyList()
                 seasonDataByYearGlobal = emptyMap()
                 wasShowClicked = false
             }) { Text("Назад к списку") }
         }
     }
 }
+
 
 @Composable
 fun DropdownMenuBox(options: List<Int>, selected: Int, onSelect: (Int) -> Unit) {
@@ -805,7 +822,6 @@ fun PlayerCompareScreen(onBack: () -> Unit) {
     }
 }
 
-
 @Composable
 fun DropdownMenuPlayerSelectorSimple(
     players: List<PlayerDataTotals>,
@@ -813,28 +829,55 @@ fun DropdownMenuPlayerSelectorSimple(
     onPlayerSelected: (PlayerDataTotals) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val uniquePlayers = players.distinctBy { it.playerName }
     Box {
         Button(onClick = { expanded = true }) {
-            Text(selectedPlayer?.let { "${it.playerName}" } ?: "Выбери игрока")
+            Text(selectedPlayer?.let { "${it.playerName} (${it.team}, ${it.season})" } ?: "Выбери игрока")
         }
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             modifier = Modifier.width(350.dp).heightIn(max = 400.dp)
         ) {
-            uniquePlayers.forEach { player ->
+            players.forEach { player ->
                 DropdownMenuItem(onClick = {
                     onPlayerSelected(player)
                     expanded = false
                 }) {
-                    Text(player.playerName)
+                    Text("${player.playerName} (${player.team}, ${player.season})")
                 }
             }
         }
     }
 }
 
+
+@Composable
+fun DropdownMenuPlayerSeasonSelector(
+    playerSeasons: List<PlayerDataTotals>,
+    selectedPlayer: PlayerDataTotals?,
+    onPlayerSelected: (PlayerDataTotals) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Button(onClick = { expanded = true }) {
+            Text(selectedPlayer?.let { "${it.season} — ${it.team}" } ?: "Выбери сезон")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.width(300.dp).heightIn(max = 400.dp)
+        ) {
+            playerSeasons.forEach { player ->
+                DropdownMenuItem(onClick = {
+                    onPlayerSelected(player)
+                    expanded = false
+                }) {
+                    Text("${player.season} — ${player.team}")
+                }
+            }
+        }
+    }
+}
 
 // Выпадающий список выбора сезона (можно и просто список, если нравится)
 @Composable
@@ -889,7 +932,6 @@ fun formatStatValue(value: Double?, isPercent: Boolean = false): String {
     }
 }
 
-
 // Цвет для сравнения (зелёный — лучше, красный — хуже)
 @Composable
 fun colorCompare(value: Double?, other: Double?, reverse: Boolean = false): Color {
@@ -900,7 +942,6 @@ fun colorCompare(value: Double?, other: Double?, reverse: Boolean = false): Colo
         else -> Color(0xFFFF2851)
     }
 }
-
 
 @Composable
 fun AppRoot() {

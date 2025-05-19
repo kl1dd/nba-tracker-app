@@ -66,3 +66,36 @@ suspend fun fetchPlayerDataByNameAndSeason(
         return response.body()
     }
 }
+
+suspend fun fetchSinglePlayerStatsByNameAndSeason(
+    playerName: String,
+    season: Int
+): PlayerDataTotals? {
+    return fetchPlayerDataByNameAndSeason(playerName, season).firstOrNull()
+}
+
+suspend fun fetchAllPlayersByName(playerName: String): List<PlayerDataTotals> {
+    val client = HttpClient(CIO) {
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
+    }
+    val pageSize = 30
+    val result = mutableListOf<PlayerDataTotals>()
+    var page = 1
+    while (true) {
+        val pageData: List<PlayerDataTotals> = client.get("http://rest.nbaapi.com/api/PlayerDataTotals/query") {
+            parameter("playerName", playerName)
+            parameter("sortBy", "PlayerName")
+            parameter("ascending", true)
+            parameter("pageNumber", page)
+            parameter("pageSize", pageSize)
+        }.body()
+        if (pageData.isEmpty()) break
+        result.addAll(pageData)
+        if (pageData.size < pageSize) break
+        page++
+    }
+    client.close()
+    return result
+}

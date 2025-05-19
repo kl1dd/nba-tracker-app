@@ -1,7 +1,5 @@
 import kotlinx.coroutines.*
 import network.fetchPlayerDataTotals
-import network.fetchPlayerDataByNamePaged
-import network.fetchPlayerDataByNameAndSeason
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -14,6 +12,9 @@ import model.PlayerDataTotals
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
+
 
 enum class Screen {
     MAIN_MENU,
@@ -287,14 +288,26 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
         selectedPlayer = null
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                players = network.fetchPlayerDataByNamePaged(searchQuery, currentPage, pageSize)
+                val fetched = network.fetchPlayerDataByNamePaged(searchQuery, currentPage, pageSize)
+                if (fetched.isEmpty()) {
+                    error = "Игрок не найден. Попробуйте другое имя или другую раскладку."
+                } else {
+                    players = fetched
+                }
                 isLoading = false
             } catch (e: Exception) {
-                error = e.message
+                // Проверяем на 404 или Not Found
+                val message = e.message ?: ""
+                error = if ("404" in message || "Not Found" in message) {
+                    "Игрок не найден. Попробуйте другое имя или другую раскладку."
+                } else {
+                    "Ошибка при запросе: ${message.lines().firstOrNull() ?: "Неизвестная ошибка"}"
+                }
                 isLoading = false
             }
         }
     }
+
 
     val headers = listOf(
         "Сезон", "Команда", "Поз", "Возраст", "Матчи", "Старт", "Мин", "Очки",
@@ -354,8 +367,13 @@ fun PlayerSearchScreen(onBack: () -> Unit) {
         ) { Text("Найти") }
 
         Spacer(Modifier.height(8.dp))
-        if (isLoading) Text("Загрузка...")
-        error?.let { Text("Ошибка: $it", color = MaterialTheme.colors.error) }
+        if (isLoading) {
+            Text("Загрузка...")
+        }
+        if (error != null) {
+            Text(error!!, color = MaterialTheme.colors.error)
+            return@Column
+        }
 
         // Пагинация + выбор игрока
         if (players.isNotEmpty() && selectedPlayer == null) {
@@ -555,14 +573,334 @@ fun DropdownMenuBox(options: List<Int>, selected: Int, onSelect: (Int) -> Unit) 
 
 @Composable
 fun PlayerCompareScreen(onBack: () -> Unit) {
-    Column(modifier = Modifier.padding(32.dp)) {
-        Button(onClick = onBack) {
-            Text("← В главное меню")
+    // --- State ---
+    var player1Query by remember { mutableStateOf("") }
+    var player2Query by remember { mutableStateOf("") }
+    var player1Results by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
+    var player2Results by remember { mutableStateOf<List<PlayerDataTotals>>(emptyList()) }
+    var selectedPlayer1 by remember { mutableStateOf<PlayerDataTotals?>(null) }
+    var selectedPlayer2 by remember { mutableStateOf<PlayerDataTotals?>(null) }
+    var season by remember { mutableStateOf(2024) }
+    val seasons = (2024 downTo 1990).toList()
+    var isLoading1 by remember { mutableStateOf(false) }
+    var isLoading2 by remember { mutableStateOf(false) }
+    var error1 by remember { mutableStateOf<String?>(null) }
+    var error2 by remember { mutableStateOf<String?>(null) }
+
+    val allStats = listOf(
+        "points" to "Очки",
+        "assists" to "Ассисты",
+        "totalRb" to "Подборы",
+        "games" to "Матчи",
+        "minutesPg" to "Минуты",
+        "fieldPercent" to "FG%",
+        "threePercent" to "3PT%",
+        "blocks" to "Блоки",
+        "steals" to "Перехваты",
+        "turnovers" to "Потери",
+        "personalFouls" to "Фолы",
+    )
+    var selectedStats by remember { mutableStateOf(allStats.map { it.first }.toSet()) }
+
+    var compareClicked by remember { mutableStateOf(false) }
+    var compareStats1 by remember { mutableStateOf<PlayerDataTotals?>(null) }
+    var compareStats2 by remember { mutableStateOf<PlayerDataTotals?>(null) }
+    var compareError by remember { mutableStateOf<String?>(null) }
+    var isCompareLoading by remember { mutableStateOf(false) } // <<==== добавили
+    val scrollState = rememberScrollState()
+
+    // --- UI ---
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(24.dp)
+            .verticalScroll(scrollState)
+    ) {
+        Button(onClick = onBack) { Text("← В главное меню") }
+        Spacer(Modifier.height(16.dp))
+
+        // Игрок 1
+        Text("Игрок 1")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = player1Query,
+                onValueChange = { player1Query = it },
+                label = { Text("Имя игрока") },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = {
+                    isLoading1 = true
+                    error1 = null
+                    player1Results = emptyList()
+                    selectedPlayer1 = null
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val res = network.fetchPlayerDataByNamePaged(player1Query, pageSize = 100)
+                            player1Results = res
+                        } catch (e: Exception) {
+                            error1 = "Ошибка: ${e.message}"
+                        }
+                        isLoading1 = false
+                    }
+                }
+            ) { Text("Найти") }
+        }
+        if (isLoading1) Text("Загрузка...", fontSize = 16.sp)
+        error1?.let { Text(it, color = MaterialTheme.colors.error) }
+        if (player1Results.isNotEmpty()) {
+            DropdownMenuPlayerSelectorSimple(
+                players = player1Results,
+                selectedPlayer = selectedPlayer1,
+                onPlayerSelected = { selectedPlayer1 = it }
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // Игрок 2
+        Text("Игрок 2")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = player2Query,
+                onValueChange = { player2Query = it },
+                label = { Text("Имя игрока") },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = {
+                    isLoading2 = true
+                    error2 = null
+                    player2Results = emptyList()
+                    selectedPlayer2 = null
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val res = network.fetchPlayerDataByNamePaged(player2Query, pageSize = 100)
+                            player2Results = res
+                        } catch (e: Exception) {
+                            error2 = "Ошибка: ${e.message}"
+                        }
+                        isLoading2 = false
+                    }
+                }
+            ) { Text("Найти") }
+        }
+        if (isLoading2) Text("Загрузка...", fontSize = 16.sp)
+        error2?.let { Text(it, color = MaterialTheme.colors.error) }
+        if (player2Results.isNotEmpty()) {
+            DropdownMenuPlayerSelectorSimple(
+                players = player2Results,
+                selectedPlayer = selectedPlayer2,
+                onPlayerSelected = { selectedPlayer2 = it }
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // Сезон
+        Text("Сезон:", style = MaterialTheme.typography.body1)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DropdownMenuSeasonPicker(
+                seasons = seasons,
+                selectedSeason = season,
+                onSeasonSelected = { season = it }
+            )
         }
         Spacer(Modifier.height(16.dp))
-        Text("Функция сравнения игроков появится позже!")
+
+        // Выбор показателей
+        Text("Выберите показатели для сравнения:", style = MaterialTheme.typography.body1)
+        Column {
+            allStats.forEach { (key, label) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = selectedStats.contains(key),
+                        onCheckedChange = {
+                            selectedStats = if (it) selectedStats + key else selectedStats - key
+                        }
+                    )
+                    Text(label)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Button(
+            enabled = selectedPlayer1 != null && selectedPlayer2 != null && selectedStats.isNotEmpty(),
+            onClick = {
+                compareClicked = true
+                compareError = null
+                compareStats1 = null
+                compareStats2 = null
+                isCompareLoading = true // <<=== теперь ставим загрузку
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val data1 = network.fetchPlayerDataByNameAndSeason(selectedPlayer1?.playerName ?: "", season)
+                        val data2 = network.fetchPlayerDataByNameAndSeason(selectedPlayer2?.playerName ?: "", season)
+                        compareStats1 = data1.firstOrNull()
+                        compareStats2 = data2.firstOrNull()
+                    } catch (e: Exception) {
+                        compareError = "Ошибка загрузки: ${e.message}"
+                    }
+                    isCompareLoading = false // <<=== по завершении выключаем загрузку
+                }
+            }
+        ) { Text("Сравнить") }
+
+        Spacer(Modifier.height(16.dp))
+        // Сравнительная таблица
+        if (compareClicked) {
+            when {
+                isCompareLoading -> {
+                    Text("Загрузка...", fontSize = 16.sp)
+                }
+                compareError != null -> {
+                    Text(compareError!!, color = MaterialTheme.colors.error)
+                }
+                (compareStats1 != null || compareStats2 != null) -> {
+                    Surface(
+                        color = MaterialTheme.colors.primary.copy(alpha = 0.05f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(8.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Показатель", modifier = Modifier.weight(1f), fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                Text(selectedPlayer1?.playerName ?: "Игрок 1", modifier = Modifier.weight(1f), fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                Text(selectedPlayer2?.playerName ?: "Игрок 2", modifier = Modifier.weight(1f), fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                            }
+                            selectedStats.forEach { statKey ->
+                                val label = allStats.find { it.first == statKey }?.second ?: statKey
+                                val v1 = compareStats1?.let { getStatValue(it, statKey) }
+                                val v2 = compareStats2?.let { getStatValue(it, statKey) }
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(label, modifier = Modifier.weight(1f))
+                                    Text(
+                                        formatStatValue(v1),
+                                        modifier = Modifier.weight(1f),
+                                        color = colorCompare(v1, v2)
+                                    )
+                                    Text(
+                                        formatStatValue(v2),
+                                        modifier = Modifier.weight(1f),
+                                        color = colorCompare(v2, v1)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    Text("Нет данных для выбранных игроков/сезона.")
+                }
+            }
+        }
     }
 }
+
+
+@Composable
+fun DropdownMenuPlayerSelectorSimple(
+    players: List<PlayerDataTotals>,
+    selectedPlayer: PlayerDataTotals?,
+    onPlayerSelected: (PlayerDataTotals) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val uniquePlayers = players.distinctBy { it.playerName }
+    Box {
+        Button(onClick = { expanded = true }) {
+            Text(selectedPlayer?.let { "${it.playerName}" } ?: "Выбери игрока")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.width(350.dp).heightIn(max = 400.dp)
+        ) {
+            uniquePlayers.forEach { player ->
+                DropdownMenuItem(onClick = {
+                    onPlayerSelected(player)
+                    expanded = false
+                }) {
+                    Text(player.playerName)
+                }
+            }
+        }
+    }
+}
+
+
+// Выпадающий список выбора сезона (можно и просто список, если нравится)
+@Composable
+fun DropdownMenuSeasonPicker(
+    seasons: List<Int>,
+    selectedSeason: Int,
+    onSeasonSelected: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Button(onClick = { expanded = true }) {
+            Text(selectedSeason.toString())
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.width(120.dp).heightIn(max = 350.dp)
+        ) {
+            seasons.forEach { s ->
+                DropdownMenuItem(onClick = {
+                    onSeasonSelected(s)
+                    expanded = false
+                }) {
+                    Text(s.toString())
+                }
+            }
+        }
+    }
+}
+
+fun getStatValue(player: PlayerDataTotals, key: String): Double? = when (key) {
+    "points" -> player.points?.toDouble()
+    "assists" -> player.assists?.toDouble()
+    "totalRb" -> player.totalRb?.toDouble()
+    "games" -> player.games?.toDouble()
+    "minutesPg" -> player.minutesPg?.toDouble()
+    "fieldPercent" -> player.fieldPercent?.times(100)
+    "threePercent" -> player.threePercent?.times(100)
+    "blocks" -> player.blocks?.toDouble()
+    "steals" -> player.steals?.toDouble()
+    "turnovers" -> player.turnovers?.toDouble()
+    "personalFouls" -> player.personalFouls?.toDouble()
+    else -> null
+}
+
+fun formatStatValue(value: Double?, isPercent: Boolean = false): String {
+    return when {
+        value == null -> "–"
+        isPercent -> String.format("%.1f%%", value)
+        value % 1 == 0.0 -> value.toInt().toString()
+        else -> String.format("%.1f", value)
+    }
+}
+
+
+// Цвет для сравнения (зелёный — лучше, красный — хуже)
+@Composable
+fun colorCompare(value: Double?, other: Double?, reverse: Boolean = false): Color {
+    return when {
+        value == null || other == null -> Color.Unspecified
+        value == other -> Color.Unspecified
+        (reverse && value < other) || (!reverse && value > other) -> Color(0xFF13D869)
+        else -> Color(0xFFFF2851)
+    }
+}
+
 
 @Composable
 fun AppRoot() {
